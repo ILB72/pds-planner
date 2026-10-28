@@ -12,7 +12,9 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, time: new Date().toISOString() });
 });
 
-// [카드 1] 계획 생성 API
+// ==========================================
+// [카드 1] 계획(Plans) 관련 API
+// ==========================================
 app.post('/api/plans', async (req, res) => {
   const { title, period_start, period_end, priority, success_criteria, estimated_minutes } = req.body;
   try {
@@ -28,7 +30,6 @@ app.post('/api/plans', async (req, res) => {
   }
 });
 
-// [카드 1] 계획 조회 API
 app.get('/api/plans', async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT * FROM plans ORDER BY id DESC');
@@ -38,7 +39,6 @@ app.get('/api/plans', async (req, res) => {
   }
 });
 
-// [카드 1] 계획 수정 및 이력 저장 API (핵심)
 app.put('/api/plans/:id', async (req, res) => {
   const { id } = req.params;
   const { title, period_start, period_end, priority, success_criteria, estimated_minutes } = req.body;
@@ -46,18 +46,14 @@ app.put('/api/plans/:id', async (req, res) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
-
-    // 1. 수정 전 기존 계획 데이터 조회 (이력으로 남기기 위해)
     const [oldPlans] = await connection.query('SELECT * FROM plans WHERE id = ?', [id]);
     if (oldPlans.length === 0) throw new Error('계획을 찾을 수 없습니다.');
     
-    // 2. 기존 데이터를 plan_history 테이블에 스냅샷으로 저장
     await connection.query(
       'INSERT INTO plan_history (plan_id, snapshot) VALUES (?, ?)',
       [id, JSON.stringify(oldPlans[0])]
     );
 
-    // 3. plans 테이블 업데이트
     await connection.query(
       `UPDATE plans SET title=?, period_start=?, period_end=?, priority=?, success_criteria=?, estimated_minutes=? WHERE id=?`,
       [title, period_start, period_end, priority, success_criteria, estimated_minutes, id]
@@ -74,13 +70,21 @@ app.put('/api/plans/:id', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
+// [카드 4] 다음 계획 고칠 점 저장 API
+app.patch('/api/plans/:id/improvement', async (req, res) => {
+  const { id } = req.params;
+  const { improvement } = req.body;
+  try {
+    await pool.query('UPDATE plans SET next_improvement = ? WHERE id = ?', [improvement, id]);
+    res.json({ message: '다음 계획 고칠 점이 저장되었습니다.' });
+  } catch (error) {
+    res.status(500).json({ error: '저장 실패' });
+  }
+});
 
 // ==========================================
-// [카드 2] 할 일(Task) 관련 API
+// [카드 2] 할 일(Tasks) 관련 API
 // ==========================================
-
-// 1. 할 일 생성 API
 app.post('/api/tasks', async (req, res) => {
   const { plan_id, title, due_date, priority, tags, estimated_minutes } = req.body;
   try {
@@ -96,11 +100,8 @@ app.post('/api/tasks', async (req, res) => {
   }
 });
 
-// 2. 할 일 조회 API (검색, 필터, 정렬 포함)
 app.get('/api/tasks', async (req, res) => {
   const { plan_id, status, search, sort } = req.query; 
-  // sort 기본값: priority_desc (우선순위 높은순), 동점일 땐 due_date 오름차순
-  
   let query = `SELECT * FROM tasks WHERE deleted_at IS NULL`;
   const params = [];
 
@@ -117,13 +118,11 @@ app.get('/api/tasks', async (req, res) => {
     params.push(`%${search}%`, `%${search}%`);
   }
 
-  // 정렬 조건 (화면에 명시할 기준)
   if (sort === 'due_date_asc') {
     query += ` ORDER BY due_date ASC, id ASC`;
   } else if (sort === 'due_date_desc') {
     query += ` ORDER BY due_date DESC, id ASC`;
   } else {
-    // 기본: 우선순위(high > medium > low) -> 마감일 빠른 순 -> ID 순
     query += ` ORDER BY FIELD(priority, 'high', 'medium', 'low'), due_date ASC, id ASC`;
   }
 
@@ -136,7 +135,6 @@ app.get('/api/tasks', async (req, res) => {
   }
 });
 
-// 3. 할 일 수정 API (내용 수정)
 app.put('/api/tasks/:id', async (req, res) => {
   const { id } = req.params;
   const { title, due_date, priority, tags, estimated_minutes } = req.body;
@@ -151,10 +149,9 @@ app.put('/api/tasks/:id', async (req, res) => {
   }
 });
 
-// 4. 할 일 완료/되돌리기 API
 app.patch('/api/tasks/:id/status', async (req, res) => {
   const { id } = req.params;
-  const { status } = req.body; // 'done' 또는 'todo'
+  const { status } = req.body;
   try {
     await pool.query(`UPDATE tasks SET status=? WHERE id=?`, [status, id]);
     res.json({ message: `상태가 ${status}로 변경되었습니다.` });
@@ -163,7 +160,6 @@ app.patch('/api/tasks/:id/status', async (req, res) => {
   }
 });
 
-// 5. 할 일 삭제 API (소프트 삭제)
 app.delete('/api/tasks/:id', async (req, res) => {
   const { id } = req.params;
   try {
@@ -175,30 +171,24 @@ app.delete('/api/tasks/:id', async (req, res) => {
 });
 
 // ==========================================
-// [카드 3] 실행 기록 API (중복 방지 핵심)
+// [카드 3] 실행 기록(Executions) 관련 API
 // ==========================================
 app.post('/api/executions', async (req, res) => {
   const { task_id, started_at, ended_at, blocked_reason } = req.body;
   
-  // 1. 실제 걸린 시간 계산 (분 단위)
   const start = new Date(started_at);
   const end = new Date(ended_at);
   const duration_minutes = Math.floor((end - start) / 1000 / 60);
-
-  // 2. 중복 방지를 위한 idempotency_key 생성 (할 일 ID + 시작시간 조합)
   const idempotency_key = `task_${task_id}_${started_at}`;
 
   try {
-    // 3. INSERT 시도 (UNIQUE 제약으로 인해 중복되면 에러 발생 -> catch로 감)
     const [result] = await pool.query(
       `INSERT INTO executions (task_id, started_at, ended_at, duration_minutes, blocked_reason, idempotency_key) 
        VALUES (?, ?, ?, ?, ?, ?)`,
       [task_id, started_at, ended_at, duration_minutes, blocked_reason || null, idempotency_key]
     );
-    
     res.status(201).json({ id: result.insertId, message: '실행 기록이 저장되었습니다.' });
   } catch (error) {
-    // MySQL 에러 코드 'ER_DUP_ENTRY' (중복 키 에러) 처리
     if (error.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ error: '이미 저장된 실행 기록입니다. (중복 방지됨)' });
     }
@@ -207,7 +197,6 @@ app.post('/api/executions', async (req, res) => {
   }
 });
 
-// 특정 할 일의 실행 기록 조회 API
 app.get('/api/executions/:task_id', async (req, res) => {
   try {
     const [rows] = await pool.query(
@@ -220,6 +209,97 @@ app.get('/api/executions/:task_id', async (req, res) => {
   }
 });
 
+// ==========================================
+// [카드 4] 돌아보기(Review) 집계 API
+// ==========================================
+app.get('/api/review/:plan_id', async (req, res) => {
+  const { plan_id } = req.params;
+  try {
+    const [[{ total_tasks }]] = await pool.query(
+      `SELECT COUNT(*) as total_tasks FROM tasks WHERE plan_id = ? AND deleted_at IS NULL`, [plan_id]
+    );
+
+    const [[{ done_tasks }]] = await pool.query(
+      `SELECT COUNT(*) as done_tasks FROM tasks WHERE plan_id = ? AND deleted_at IS NULL AND status = 'done'`, [plan_id]
+    );
+
+    const [[{ delayed_tasks }]] = await pool.query(
+      `SELECT COUNT(*) as delayed_tasks FROM tasks 
+       WHERE plan_id = ? AND deleted_at IS NULL AND status != 'done' 
+       AND DATE(due_date) < DATE(CONVERT_TZ(NOW(), '+00:00', '+09:00'))`, [plan_id]
+    );
+
+    const [[{ blocked_tasks }]] = await pool.query(
+      `SELECT COUNT(DISTINCT t.id) as blocked_tasks 
+       FROM tasks t JOIN executions e ON t.id = e.task_id 
+       WHERE t.plan_id = ? AND t.deleted_at IS NULL AND e.blocked_reason IS NOT NULL AND e.blocked_reason != ''`, [plan_id]
+    );
+
+    const [[{ total_estimated }]] = await pool.query(
+      `SELECT COALESCE(SUM(estimated_minutes), 0) as total_estimated FROM tasks WHERE plan_id = ? AND deleted_at IS NULL`, [plan_id]
+    );
+
+    const [[{ total_actual }]] = await pool.query(
+      `SELECT COALESCE(SUM(e.duration_minutes), 0) as total_actual 
+       FROM executions e JOIN tasks t ON e.task_id = t.id 
+       WHERE t.plan_id = ? AND t.deleted_at IS NULL`, [plan_id]
+    );
+
+    res.json({
+      total_tasks,
+      done_tasks,
+      delayed_tasks,
+      blocked_tasks,
+      total_estimated,
+      total_actual,
+      difference: total_actual - total_estimated
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: '집계 실패' });
+  }
+});
+
+app.get('/api/review/:plan_id/drilldown', async (req, res) => {
+  const { plan_id } = req.params;
+  const { type } = req.query;
+  
+  let query = `SELECT t.* FROM tasks t WHERE t.plan_id = ? AND t.deleted_at IS NULL`;
+  const params = [plan_id];
+
+  if (type === 'done') {
+    query += ` AND t.status = 'done'`;
+  } else if (type === 'delayed') {
+    query += ` AND t.status != 'done' AND DATE(t.due_date) < DATE(CONVERT_TZ(NOW(), '+00:00', '+09:00'))`;
+  } else if (type === 'blocked') {
+    query = `SELECT DISTINCT t.* FROM tasks t JOIN executions e ON t.id = e.task_id 
+             WHERE t.plan_id = ? AND t.deleted_at IS NULL AND e.blocked_reason IS NOT NULL AND e.blocked_reason != ''`;
+  }
+
+  try {
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: '드릴다운 조회 실패' });
+  }
+});
+
+// ==========================================
+// [카드 5] 데이터 내보내기 API
+// ==========================================
+app.get('/api/export', async (req, res) => {
+  try {
+    const [plans] = await pool.query('SELECT * FROM plans');
+    const [tasks] = await pool.query('SELECT * FROM tasks');
+    const [executions] = await pool.query('SELECT * FROM executions');
+    
+    res.json({ plans, tasks, executions, exported_at: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: '내보내기 실패' });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });

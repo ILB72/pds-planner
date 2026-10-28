@@ -5,15 +5,37 @@ function App() {
 
   return (
     <div style={{ padding: '20px', maxWidth: '900px', margin: '0 auto' }}>
-      <div style={{ marginBottom: '20px', borderBottom: '2px solid #ccc', paddingBottom: '10px' }}>
-        <button onClick={() => setActiveTab('card1')} style={{ marginRight: '10px', fontWeight: activeTab === 'card1' ? 'bold' : 'normal' }}>카드 1 (계획)</button>
-        <button onClick={() => setActiveTab('card2')} style={{ marginRight: '10px', fontWeight: activeTab === 'card2' ? 'bold' : 'normal' }}>카드 2 (할 일)</button>
-        <button onClick={() => setActiveTab('card3')} style={{ fontWeight: activeTab === 'card3' ? 'bold' : 'normal' }}>카드 3 (실행 기록)</button>
+      {/* 공개 안내문 (T06-C82) */}
+      <div style={{ backgroundColor: '#fff3cd', color: '#856404', padding: '15px', marginBottom: '20px', borderRadius: '5px', border: '1px solid #ffeeba' }}>
+        <strong>⚠️ 안내:</strong> 지금은 로그인이 없어 링크를 아는 사람은 누구나 볼 수 있습니다. 남이 봐도 괜찮은 내용만 넣으세요.
+      </div>
+
+      <div style={{ marginBottom: '20px', borderBottom: '2px solid #ccc', paddingBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <button onClick={() => setActiveTab('card1')} style={{ marginRight: '10px', fontWeight: activeTab === 'card1' ? 'bold' : 'normal' }}>카드 1 (계획)</button>
+          <button onClick={() => setActiveTab('card2')} style={{ marginRight: '10px', fontWeight: activeTab === 'card2' ? 'bold' : 'normal' }}>카드 2 (할 일)</button>
+          <button onClick={() => setActiveTab('card3')} style={{ marginRight: '10px', fontWeight: activeTab === 'card3' ? 'bold' : 'normal' }}>카드 3 (실행 기록)</button>
+          <button onClick={() => setActiveTab('card4')} style={{ fontWeight: activeTab === 'card4' ? 'bold' : 'normal' }}>카드 4 (돌아보기)</button>
+        </div>
+        <button onClick={async () => {
+          const res = await fetch('/api/export');
+          const data = await res.json();
+          const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'pds-planner-backup.json';
+          a.click();
+          URL.revokeObjectURL(url);
+        }} style={{ backgroundColor: '#4CAF50', color: 'white', padding: '8px 12px', border: 'none', borderRadius: '3px', cursor: 'pointer' }}>
+          📥 내 데이터 내보내기
+        </button>
       </div>
 
       {activeTab === 'card1' && <Card1 />}
       {activeTab === 'card2' && <Card2 />}
       {activeTab === 'card3' && <Card3 />}
+      {activeTab === 'card4' && <Card4 />}
     </div>
   );
 }
@@ -75,6 +97,12 @@ function Card1() {
         {plans.map((plan) => (
           <li key={plan.id} style={{ border: '1px solid #ddd', padding: '15px', marginBottom: '10px' }}>
             <h4>{plan.title} ({plan.priority})</h4>
+            {/* 💡 추가된 부분: 다음 계획 고칠 점 표시 */}
+            {plan.next_improvement && (
+              <p style={{ color: '#d32f2f', fontWeight: 'bold', margin: '5px 0' }}>
+                🎯 다음 계획을 위한 고칠 점: {plan.next_improvement}
+              </p>
+            )}
             <button onClick={() => handleEdit(plan)}>수정하기</button>
           </li>
         ))}
@@ -291,6 +319,137 @@ function Card3() {
             ))}
           </ul>
         </>
+      )}
+    </div>
+  );
+}
+
+// ================= 카드 4 컴포넌트 (돌아보기) =================
+function Card4() {
+  const [plans, setPlans] = useState([]);
+  const [selectedPlanId, setSelectedPlanId] = useState('');
+  const [review, setReview] = useState(null);
+  const [drilldownData, setDrilldownData] = useState(null);
+  const [drilldownType, setDrilldownType] = useState('');
+  
+  const [nextImprovement, setNextImprovement] = useState('');
+
+  const fetchPlans = async () => {
+    const res = await fetch('/api/plans');
+    setPlans(await res.json());
+  };
+
+  const fetchReview = async (planId) => {
+    if (!planId) return;
+    const res = await fetch(`/api/review/${planId}`);
+    setReview(await res.json());
+    setDrilldownData(null);
+  };
+
+  useEffect(() => { fetchPlans(); }, []);
+
+  const handlePlanChange = (e) => {
+    const planId = e.target.value;
+    setSelectedPlanId(planId);
+    fetchReview(planId);
+  };
+
+  const handleDrilldown = async (type) => {
+    if (type === drilldownType) {
+      setDrilldownData(null);
+      setDrilldownType('');
+      return;
+    }
+    const res = await fetch(`/api/review/${selectedPlanId}/drilldown?type=${type}`);
+    const data = await res.json();
+    setDrilldownData(data);
+    setDrilldownType(type);
+  };
+
+  return (
+    <div>
+      <h2>카드 4: 돌아보기 (집계)</h2>
+      
+      <div style={{ marginBottom: '20px', padding: '20px', border: '1px solid #ccc' }}>
+        <h3>어떤 계획을 돌아볼까요?</h3>
+        <select value={selectedPlanId} onChange={handlePlanChange} style={{ width: '100%', padding: '10px' }}>
+          <option value="">계획을 선택하세요</option>
+          {plans.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+        </select>
+      </div>
+
+      {review && (
+        <div>
+          <h3>📊 집계 결과 (숫자를 누르면 기록을 볼 수 있어요)</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px' }}>
+            
+            <div style={{ padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
+              <p><strong>전체 할 일:</strong> {review.total_tasks}개</p>
+            </div>
+            
+            <div style={{ padding: '15px', border: '1px solid #ddd', borderRadius: '5px', cursor: 'pointer' }} onClick={() => handleDrilldown('done')}>
+              <p><strong>완료:</strong> <span style={{ color: 'blue', textDecoration: 'underline' }}>{review.done_tasks}개</span> (클릭)</p>
+            </div>
+
+            <div style={{ padding: '15px', border: '1px solid #ddd', borderRadius: '5px', cursor: 'pointer' }} onClick={() => handleDrilldown('delayed')}>
+              <p><strong>지연:</strong> <span style={{ color: 'red', textDecoration: 'underline' }}>{review.delayed_tasks}개</span> (클릭)</p>
+            </div>
+
+            <div style={{ padding: '15px', border: '1px solid #ddd', borderRadius: '5px', cursor: 'pointer' }} onClick={() => handleDrilldown('blocked')}>
+              <p><strong>막힘:</strong> <span style={{ color: 'orange', textDecoration: 'underline' }}>{review.blocked_tasks}개</span> (클릭)</p>
+            </div>
+
+            <div style={{ padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
+              <p><strong>예상 시간:</strong> {review.total_estimated}분</p>
+            </div>
+
+            <div style={{ padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
+              <p><strong>실제 시간:</strong> {review.total_actual}분</p>
+            </div>
+            
+            <div style={{ padding: '15px', border: '1px solid #ddd', borderRadius: '5px', gridColumn: '1 / -1', backgroundColor: '#fff3e0' }}>
+              <p><strong>시간 차이 (실제 - 예상):</strong> {review.difference}분</p>
+            </div>
+          </div>
+
+          {drilldownData && (
+            <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#e3f2fd', borderRadius: '5px' }}>
+              <h4>{drilldownType === 'done' ? '완료된' : drilldownType === 'delayed' ? '지연된' : '막힌'} 할 일 기록 ({drilldownData.length}건)</h4>
+              <ul style={{ paddingLeft: '20px' }}>
+                {drilldownData.map(task => (
+                  <li key={task.id}>{task.title} (상태: {task.status}, 마감: {task.due_date ? task.due_date.split('T')[0] : '없음'})</li>
+                ))}
+                {drilldownData.length === 0 && <p>해당하는 기록이 없습니다.</p>}
+              </ul>
+            </div>
+          )}
+
+          <hr style={{ margin: '30px 0' }} />
+          
+          <div style={{ padding: '20px', border: '1px solid #ccc', backgroundColor: '#fafafa' }}>
+            <h3>다음 계획으로 넘길 고칠 점 한 줄 (T06-C33)</h3>
+            <p style={{ fontSize: '12px', color: '#666' }}>위 집계를 보고 느낀 점을 적어 다음 계획에 반영해 보세요.</p>
+            <input 
+              style={{ width: '80%', padding: '10px', marginRight: '10px' }}
+              placeholder="예: 다음에는 예상 시간을 넉넉하게 잡자" 
+              value={nextImprovement} 
+              onChange={(e) => setNextImprovement(e.target.value)} 
+            />
+            <button onClick={async () => {
+               if(!nextImprovement) return alert('내용을 입력하세요');
+               const res = await fetch(`/api/plans/${selectedPlanId}/improvement`, {
+                 method: 'PATCH',
+                 headers: { 'Content-Type': 'application/json' },
+                 body: JSON.stringify({ improvement: nextImprovement })
+               });
+               if (res.ok) {
+                 alert('다음 계획으로 넘길 고칠 점이 저장되었습니다.');
+                 setNextImprovement(''); // 입력창 비우기
+                 fetchPlans(); // 카드 1 목록 새로고침 유도 (탭 이동 시 반영됨)
+               }
+            }}>저장</button>
+          </div>
+        </div>
       )}
     </div>
   );
