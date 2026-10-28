@@ -1,8 +1,51 @@
 import { useState, useEffect } from 'react';
-import './index.css'; // CSS 불러오기
+import './index.css';
+
+// 🔄 서버 절전 모드 대응: 실패 시 재시도하는 fetch 함수
+const fetchWithRetry = async (url, options = {}, retries = 3, delay = 3000) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.ok || res.status === 409 || res.status === 404) return res;
+    } catch (err) {
+      if (i === retries - 1) throw err;
+    }
+    await new Promise((r) => setTimeout(r, delay));
+  }
+  throw new Error('서버 응답 지연');
+};
+
+// 🔗 API 주소 설정 (배포 시 VITE_API_URL 사용, 로컬은 빈 문자열)
+const API_URL = import.meta.env.VITE_API_URL || '';
 
 function App() {
   const [activeTab, setActiveTab] = useState('card1');
+  const [isServerReady, setIsServerReady] = useState(false);
+  const [serverError, setServerError] = useState(false);
+
+  // 🌐 서버가 켜져 있는지(절전 모드인지) 확인
+  useEffect(() => {
+    const checkServer = async () => {
+      try {
+        const res = await fetchWithRetry(`${API_URL}/api/health`);
+        if (res.ok) setIsServerReady(true);
+      } catch (err) {
+        setServerError(true);
+      }
+    };
+    checkServer();
+  }, []);
+
+  if (!isServerReady) {
+    return (
+      <div className="app-container" style={{ textAlign: 'center', marginTop: '100px' }}>
+        <h2>🌿 서버를 깨우는 중입니다...</h2>
+        <p style={{ color: 'var(--muted)' }}>무료 서버 특성상 첫 연결은 최대 1분 정도 걸릴 수 있어요. 잠시만 기다려 주세요.</p>
+        {serverError && <p style={{ color: '#B85C5C', marginTop: '20px' }}>서버에 연결할 수 없습니다. 새로고침을 눌러주세요.</p>}
+        {serverError && <button className="btn-primary" onClick={() => window.location.reload()} style={{ marginTop: '10px' }}>다시 시도</button>}
+      </div>
+    );
+  }
 
   return (
     <div className="app-container">
@@ -11,7 +54,6 @@ function App() {
       </div>
 
       <div className="nav-bar">
-        {/* 모바일 가로 스크롤을 위한 래퍼 */}
         <div className="tab-group-wrapper">
           <div className="tab-group">
             <button onClick={() => setActiveTab('card1')} className={`tab-btn ${activeTab === 'card1' ? 'active' : ''}`}>계획</button>
@@ -21,7 +63,7 @@ function App() {
           </div>
         </div>
         <button className="btn-export" onClick={async () => {
-          const res = await fetch('/api/export');
+          const res = await fetchWithRetry(`${API_URL}/api/export`);
           const data = await res.json();
           const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
           const url = URL.createObjectURL(blob);
@@ -51,7 +93,7 @@ function Card1() {
   const [historyData, setHistoryData] = useState(null);
 
   const fetchPlans = async () => {
-    const res = await fetch('/api/plans');
+    const res = await fetchWithRetry(`${API_URL}/api/plans`);
     setPlans(await res.json());
   };
 
@@ -62,8 +104,8 @@ function Card1() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     const method = editingId ? 'PUT' : 'POST';
-    const url = editingId ? `/api/plans/${editingId}` : '/api/plans';
-    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+    const url = editingId ? `${API_URL}/api/plans/${editingId}` : `${API_URL}/api/plans`;
+    const res = await fetchWithRetry(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
     if (res.ok) {
       alert(editingId ? '수정되었습니다. (이력이 저장됨)' : '생성되었습니다.');
       setForm({ title: '', period_start: '', period_end: '', priority: 'medium', success_criteria: '', estimated_minutes: 0 });
@@ -78,7 +120,7 @@ function Card1() {
   };
 
   const handleShowHistory = async (id) => {
-    const res = await fetch(`/api/plans/${id}/history`);
+    const res = await fetchWithRetry(`${API_URL}/api/plans/${id}/history`);
     setHistoryData(await res.json());
   };
 
@@ -178,7 +220,7 @@ function Card2() {
   const [sort, setSort] = useState('priority_desc');
 
   const fetchPlans = async () => {
-    const res = await fetch('/api/plans');
+    const res = await fetchWithRetry(`${API_URL}/api/plans`);
     setPlans(await res.json());
   };
 
@@ -187,7 +229,7 @@ function Card2() {
     if (search) params.append('search', search);
     if (statusFilter) params.append('status', statusFilter);
     if (sort) params.append('sort', sort);
-    const res = await fetch(`/api/tasks?${params.toString()}`);
+    const res = await fetchWithRetry(`${API_URL}/api/tasks?${params.toString()}`);
     setTasks(await res.json());
   };
 
@@ -199,8 +241,8 @@ function Card2() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     const method = editingId ? 'PUT' : 'POST';
-    const url = editingId ? `/api/tasks/${editingId}` : '/api/tasks';
-    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+    const url = editingId ? `${API_URL}/api/tasks/${editingId}` : `${API_URL}/api/tasks`;
+    const res = await fetchWithRetry(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
     if (res.ok) {
       alert(editingId ? '할 일이 수정되었습니다.' : '할 일이 생성되었습니다.');
       setForm({ plan_id: '', title: '', due_date: '', priority: 'medium', tags: '', estimated_minutes: 0 });
@@ -216,13 +258,13 @@ function Card2() {
 
   const handleStatusToggle = async (id, currentStatus) => {
     const nextStatus = currentStatus === 'done' ? 'todo' : 'done';
-    await fetch(`/api/tasks/${id}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: nextStatus }) });
+    await fetchWithRetry(`${API_URL}/api/tasks/${id}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: nextStatus }) });
     fetchTasks();
   };
 
   const handleDelete = async (id) => {
     if (!window.confirm('정말 삭제하시겠습니까?')) return;
-    await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
+    await fetchWithRetry(`${API_URL}/api/tasks/${id}`, { method: 'DELETE' });
     fetchTasks();
   };
 
@@ -317,13 +359,13 @@ function Card3() {
   const [isLoading, setIsLoading] = useState(false);
 
   const fetchTasks = async () => {
-    const res = await fetch('/api/tasks');
+    const res = await fetchWithRetry(`${API_URL}/api/tasks`);
     setTasks(await res.json());
   };
 
   const fetchExecutions = async (taskId) => {
     if (!taskId) return;
-    const res = await fetch(`/api/executions/${taskId}`);
+    const res = await fetchWithRetry(`${API_URL}/api/executions/${taskId}`);
     setExecutions(await res.json());
   };
 
@@ -344,7 +386,7 @@ function Card3() {
     
     setIsLoading(true);
     try {
-      const res = await fetch('/api/executions', {
+      const res = await fetchWithRetry(`${API_URL}/api/executions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...form, task_id: selectedTaskId }),
@@ -428,13 +470,13 @@ function Card4() {
   const [nextImprovement, setNextImprovement] = useState('');
 
   const fetchPlans = async () => {
-    const res = await fetch('/api/plans');
+    const res = await fetchWithRetry(`${API_URL}/api/plans`);
     setPlans(await res.json());
   };
 
   const fetchReview = async (planId) => {
     if (!planId) return;
-    const res = await fetch(`/api/review/${planId}`);
+    const res = await fetchWithRetry(`${API_URL}/api/review/${planId}`);
     setReview(await res.json());
     setDrilldownData(null);
   };
@@ -453,7 +495,7 @@ function Card4() {
       setDrilldownType('');
       return;
     }
-    const res = await fetch(`/api/review/${selectedPlanId}/drilldown?type=${type}`);
+    const res = await fetchWithRetry(`${API_URL}/api/review/${selectedPlanId}/drilldown?type=${type}`);
     const data = await res.json();
     setDrilldownData(data);
     setDrilldownType(type);
@@ -526,7 +568,7 @@ function Card4() {
               />
               <button className="btn-primary" onClick={async () => {
                 if(!nextImprovement) return alert('내용을 입력하세요');
-                const res = await fetch(`/api/plans/${selectedPlanId}/improvement`, {
+                const res = await fetchWithRetry(`${API_URL}/api/plans/${selectedPlanId}/improvement`, {
                   method: 'PATCH',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ improvement: nextImprovement })
