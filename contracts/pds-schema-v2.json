@@ -1,0 +1,58 @@
+{
+  "schema_version": "2.0",
+  "description": "PDS Planner v2 데이터베이스 스키마 정의",
+  "tables": {
+    "plans": {
+      "columns": {
+        "id": { "type": "INT", "primary_key": true, "auto_increment": true },
+        "title": { "type": "VARCHAR(200)", "nullable": false },
+        "period_start": { "type": "DATE", "nullable": false },
+        "period_end": { "type": "DATE", "nullable": false },
+        "priority": { "type": "ENUM('high','medium','low')", "nullable": false },
+        "success_criteria": { "type": "TEXT", "nullable": false },
+        "estimated_minutes": { "type": "INT", "nullable": false },
+        "next_improvement": { "type": "VARCHAR(500)", "nullable": true },
+        "created_at": { "type": "DATETIME", "default": "CURRENT_TIMESTAMP" }
+      }
+    },
+    "plan_history": {
+      "columns": {
+        "id": { "type": "INT", "primary_key": true, "auto_increment": true },
+        "plan_id": { "type": "INT", "foreign_key": "plans.id" },
+        "snapshot": { "type": "JSON", "nullable": false },
+        "changed_at": { "type": "DATETIME", "default": "CURRENT_TIMESTAMP" }
+      }
+    },
+    "tasks": {
+      "columns": {
+        "id": { "type": "INT", "primary_key": true, "auto_increment": true },
+        "plan_id": { "type": "INT", "foreign_key": "plans.id" },
+        "title": { "type": "VARCHAR(200)", "nullable": false },
+        "due_date": { "type": "DATE", "nullable": true },
+        "priority": { "type": "ENUM('high','medium','low')", "nullable": false },
+        "tags": { "type": "VARCHAR(200)", "nullable": true },
+        "estimated_minutes": { "type": "INT", "nullable": false },
+        "status": { "type": "ENUM('todo','done')", "nullable": false },
+        "deleted_at": { "type": "DATETIME", "nullable": true },
+        "created_at": { "type": "DATETIME", "default": "CURRENT_TIMESTAMP" }
+      }
+    },
+    "executions": {
+      "columns": {
+        "id": { "type": "INT", "primary_key": true, "auto_increment": true },
+        "task_id": { "type": "INT", "foreign_key": "tasks.id" },
+        "started_at": { "type": "DATETIME", "nullable": false },
+        "ended_at": { "type": "DATETIME", "nullable": false },
+        "duration_minutes": { "type": "INT", "nullable": false },
+        "blocked_reason": { "type": "VARCHAR(500)", "nullable": true },
+        "idempotency_key": { "type": "VARCHAR(64)", "unique": true },
+        "created_at": { "type": "DATETIME", "default": "CURRENT_TIMESTAMP" }
+      }
+    }
+  },
+  "date_rules": {
+    "timezone": "Asia/Seoul (KST)",
+    "storage_format": "YYYY-MM-DD HH:MM:SS",
+    "due_date_logic": "완료되지 않은 할 일 중 마감일이 서울 시간 기준 오늘보다 이전인 경우 지연으로 판정"
+  }
+}

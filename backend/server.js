@@ -70,6 +70,19 @@ app.put('/api/plans/:id', async (req, res) => {
   }
 });
 
+// [카드 1] 계획 수정 이력 조회 API (신규 추가)
+app.get('/api/plans/:id/history', async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT * FROM plan_history WHERE plan_id = ? ORDER BY changed_at DESC', 
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: '이력 조회 실패' });
+  }
+});
+
 // [카드 4] 다음 계획 고칠 점 저장 API
 app.patch('/api/plans/:id/improvement', async (req, res) => {
   const { id } = req.params;
@@ -105,34 +118,18 @@ app.get('/api/tasks', async (req, res) => {
   let query = `SELECT * FROM tasks WHERE deleted_at IS NULL`;
   const params = [];
 
-  if (plan_id) {
-    query += ` AND plan_id = ?`;
-    params.push(plan_id);
-  }
-  if (status) {
-    query += ` AND status = ?`;
-    params.push(status);
-  }
-  if (search) {
-    query += ` AND (title LIKE ? OR tags LIKE ?)`;
-    params.push(`%${search}%`, `%${search}%`);
-  }
+  if (plan_id) { query += ` AND plan_id = ?`; params.push(plan_id); }
+  if (status) { query += ` AND status = ?`; params.push(status); }
+  if (search) { query += ` AND (title LIKE ? OR tags LIKE ?)`; params.push(`%${search}%`, `%${search}%`); }
 
-  if (sort === 'due_date_asc') {
-    query += ` ORDER BY due_date ASC, id ASC`;
-  } else if (sort === 'due_date_desc') {
-    query += ` ORDER BY due_date DESC, id ASC`;
-  } else {
-    query += ` ORDER BY FIELD(priority, 'high', 'medium', 'low'), due_date ASC, id ASC`;
-  }
+  if (sort === 'due_date_asc') { query += ` ORDER BY due_date ASC, id ASC`; } 
+  else if (sort === 'due_date_desc') { query += ` ORDER BY due_date DESC, id ASC`; } 
+  else { query += ` ORDER BY FIELD(priority, 'high', 'medium', 'low'), due_date ASC, id ASC`; }
 
   try {
     const [rows] = await pool.query(query, params);
     res.json(rows);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: '할 일 조회 실패' });
-  }
+  } catch (error) { res.status(500).json({ error: '할 일 조회 실패' }); }
 });
 
 app.put('/api/tasks/:id', async (req, res) => {
@@ -144,9 +141,7 @@ app.put('/api/tasks/:id', async (req, res) => {
       [title, due_date, priority, tags, estimated_minutes, id]
     );
     res.json({ message: '할 일이 수정되었습니다.' });
-  } catch (error) {
-    res.status(500).json({ error: '할 일 수정 실패' });
-  }
+  } catch (error) { res.status(500).json({ error: '할 일 수정 실패' }); }
 });
 
 app.patch('/api/tasks/:id/status', async (req, res) => {
@@ -155,9 +150,7 @@ app.patch('/api/tasks/:id/status', async (req, res) => {
   try {
     await pool.query(`UPDATE tasks SET status=? WHERE id=?`, [status, id]);
     res.json({ message: `상태가 ${status}로 변경되었습니다.` });
-  } catch (error) {
-    res.status(500).json({ error: '상태 변경 실패' });
-  }
+  } catch (error) { res.status(500).json({ error: '상태 변경 실패' }); }
 });
 
 app.delete('/api/tasks/:id', async (req, res) => {
@@ -165,9 +158,7 @@ app.delete('/api/tasks/:id', async (req, res) => {
   try {
     await pool.query(`UPDATE tasks SET deleted_at = NOW() WHERE id=?`, [id]);
     res.json({ message: '할 일이 삭제되었습니다.' });
-  } catch (error) {
-    res.status(500).json({ error: '할 일 삭제 실패' });
-  }
+  } catch (error) { res.status(500).json({ error: '할 일 삭제 실패' }); }
 });
 
 // ==========================================
@@ -175,7 +166,6 @@ app.delete('/api/tasks/:id', async (req, res) => {
 // ==========================================
 app.post('/api/executions', async (req, res) => {
   const { task_id, started_at, ended_at, blocked_reason } = req.body;
-  
   const start = new Date(started_at);
   const end = new Date(ended_at);
   const duration_minutes = Math.floor((end - start) / 1000 / 60);
@@ -204,9 +194,7 @@ app.get('/api/executions/:task_id', async (req, res) => {
       [req.params.task_id]
     );
     res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: '실행 기록 조회 실패' });
-  }
+  } catch (error) { res.status(500).json({ error: '실행 기록 조회 실패' }); }
 });
 
 // ==========================================
@@ -215,51 +203,27 @@ app.get('/api/executions/:task_id', async (req, res) => {
 app.get('/api/review/:plan_id', async (req, res) => {
   const { plan_id } = req.params;
   try {
-    const [[{ total_tasks }]] = await pool.query(
-      `SELECT COUNT(*) as total_tasks FROM tasks WHERE plan_id = ? AND deleted_at IS NULL`, [plan_id]
-    );
-
-    const [[{ done_tasks }]] = await pool.query(
-      `SELECT COUNT(*) as done_tasks FROM tasks WHERE plan_id = ? AND deleted_at IS NULL AND status = 'done'`, [plan_id]
-    );
-
+    const [[{ total_tasks }]] = await pool.query(`SELECT COUNT(*) as total_tasks FROM tasks WHERE plan_id = ? AND deleted_at IS NULL`, [plan_id]);
+    const [[{ done_tasks }]] = await pool.query(`SELECT COUNT(*) as done_tasks FROM tasks WHERE plan_id = ? AND deleted_at IS NULL AND status = 'done'`, [plan_id]);
     const [[{ delayed_tasks }]] = await pool.query(
-      `SELECT COUNT(*) as delayed_tasks FROM tasks 
-       WHERE plan_id = ? AND deleted_at IS NULL AND status != 'done' 
-       AND DATE(due_date) < DATE(CONVERT_TZ(NOW(), '+00:00', '+09:00'))`, [plan_id]
+      `SELECT COUNT(*) as delayed_tasks FROM tasks WHERE plan_id = ? AND deleted_at IS NULL AND status != 'done' AND DATE(due_date) < DATE(CONVERT_TZ(NOW(), '+00:00', '+09:00'))`, [plan_id]
     );
-
     const [[{ blocked_tasks }]] = await pool.query(
-      `SELECT COUNT(DISTINCT t.id) as blocked_tasks 
-       FROM tasks t JOIN executions e ON t.id = e.task_id 
-       WHERE t.plan_id = ? AND t.deleted_at IS NULL AND e.blocked_reason IS NOT NULL AND e.blocked_reason != ''`, [plan_id]
+      `SELECT COUNT(DISTINCT t.id) as blocked_tasks FROM tasks t JOIN executions e ON t.id = e.task_id WHERE t.plan_id = ? AND t.deleted_at IS NULL AND e.blocked_reason IS NOT NULL AND e.blocked_reason != ''`, [plan_id]
     );
-
-    const [[{ total_estimated }]] = await pool.query(
-      `SELECT COALESCE(SUM(estimated_minutes), 0) as total_estimated FROM tasks WHERE plan_id = ? AND deleted_at IS NULL`, [plan_id]
-    );
-
+    const [[{ total_estimated }]] = await pool.query(`SELECT COALESCE(SUM(estimated_minutes), 0) as total_estimated FROM tasks WHERE plan_id = ? AND deleted_at IS NULL`, [plan_id]);
     const [[{ total_actual }]] = await pool.query(
-      `SELECT COALESCE(SUM(e.duration_minutes), 0) as total_actual 
-       FROM executions e JOIN tasks t ON e.task_id = t.id 
-       WHERE t.plan_id = ? AND t.deleted_at IS NULL`, [plan_id]
+      `SELECT COALESCE(SUM(e.duration_minutes), 0) as total_actual FROM executions e JOIN tasks t ON e.task_id = t.id WHERE t.plan_id = ? AND t.deleted_at IS NULL`, [plan_id]
     );
 
-    res.json({
-      total_tasks,
-      done_tasks,
-      delayed_tasks,
-      blocked_tasks,
-      total_estimated,
-      total_actual,
-      difference: total_actual - total_estimated
-    });
+    res.json({ total_tasks, done_tasks, delayed_tasks, blocked_tasks, total_estimated, total_actual, difference: total_actual - total_estimated });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: '집계 실패' });
   }
 });
 
+// [카드 4] 드릴다운 API (모든 집계 항목 지원하도록 확장)
 app.get('/api/review/:plan_id/drilldown', async (req, res) => {
   const { plan_id } = req.params;
   const { type } = req.query;
@@ -267,21 +231,22 @@ app.get('/api/review/:plan_id/drilldown', async (req, res) => {
   let query = `SELECT t.* FROM tasks t WHERE t.plan_id = ? AND t.deleted_at IS NULL`;
   const params = [plan_id];
 
-  if (type === 'done') {
+  if (type === 'total') {
+    // 전체 할 일 (조건 없음)
+  } else if (type === 'done') {
     query += ` AND t.status = 'done'`;
   } else if (type === 'delayed') {
     query += ` AND t.status != 'done' AND DATE(t.due_date) < DATE(CONVERT_TZ(NOW(), '+00:00', '+09:00'))`;
   } else if (type === 'blocked') {
-    query = `SELECT DISTINCT t.* FROM tasks t JOIN executions e ON t.id = e.task_id 
-             WHERE t.plan_id = ? AND t.deleted_at IS NULL AND e.blocked_reason IS NOT NULL AND e.blocked_reason != ''`;
+    query = `SELECT DISTINCT t.* FROM tasks t JOIN executions e ON t.id = e.task_id WHERE t.plan_id = ? AND t.deleted_at IS NULL AND e.blocked_reason IS NOT NULL AND e.blocked_reason != ''`;
+  } else if (type === 'estimated' || type === 'actual') {
+    query += ` ORDER BY t.id ASC`;
   }
 
   try {
     const [rows] = await pool.query(query, params);
     res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: '드릴다운 조회 실패' });
-  }
+  } catch (error) { res.status(500).json({ error: '드릴다운 조회 실패' }); }
 });
 
 // ==========================================
@@ -292,11 +257,8 @@ app.get('/api/export', async (req, res) => {
     const [plans] = await pool.query('SELECT * FROM plans');
     const [tasks] = await pool.query('SELECT * FROM tasks');
     const [executions] = await pool.query('SELECT * FROM executions');
-    
     res.json({ plans, tasks, executions, exported_at: new Date().toISOString() });
-  } catch (error) {
-    res.status(500).json({ error: '내보내기 실패' });
-  }
+  } catch (error) { res.status(500).json({ error: '내보내기 실패' }); }
 });
 
 const PORT = process.env.PORT || 3000;
