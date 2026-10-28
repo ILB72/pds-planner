@@ -75,6 +75,105 @@ app.put('/api/plans/:id', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
+// ==========================================
+// [카드 2] 할 일(Task) 관련 API
+// ==========================================
+
+// 1. 할 일 생성 API
+app.post('/api/tasks', async (req, res) => {
+  const { plan_id, title, due_date, priority, tags, estimated_minutes } = req.body;
+  try {
+    const [result] = await pool.query(
+      `INSERT INTO tasks (plan_id, title, due_date, priority, tags, estimated_minutes) 
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [plan_id, title, due_date, priority, tags, estimated_minutes]
+    );
+    res.status(201).json({ id: result.insertId, message: '할 일이 생성되었습니다.' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: '할 일 생성 실패' });
+  }
+});
+
+// 2. 할 일 조회 API (검색, 필터, 정렬 포함)
+app.get('/api/tasks', async (req, res) => {
+  const { plan_id, status, search, sort } = req.query; 
+  // sort 기본값: priority_desc (우선순위 높은순), 동점일 땐 due_date 오름차순
+  
+  let query = `SELECT * FROM tasks WHERE deleted_at IS NULL`;
+  const params = [];
+
+  if (plan_id) {
+    query += ` AND plan_id = ?`;
+    params.push(plan_id);
+  }
+  if (status) {
+    query += ` AND status = ?`;
+    params.push(status);
+  }
+  if (search) {
+    query += ` AND (title LIKE ? OR tags LIKE ?)`;
+    params.push(`%${search}%`, `%${search}%`);
+  }
+
+  // 정렬 조건 (화면에 명시할 기준)
+  if (sort === 'due_date_asc') {
+    query += ` ORDER BY due_date ASC, id ASC`;
+  } else if (sort === 'due_date_desc') {
+    query += ` ORDER BY due_date DESC, id ASC`;
+  } else {
+    // 기본: 우선순위(high > medium > low) -> 마감일 빠른 순 -> ID 순
+    query += ` ORDER BY FIELD(priority, 'high', 'medium', 'low'), due_date ASC, id ASC`;
+  }
+
+  try {
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: '할 일 조회 실패' });
+  }
+});
+
+// 3. 할 일 수정 API (내용 수정)
+app.put('/api/tasks/:id', async (req, res) => {
+  const { id } = req.params;
+  const { title, due_date, priority, tags, estimated_minutes } = req.body;
+  try {
+    await pool.query(
+      `UPDATE tasks SET title=?, due_date=?, priority=?, tags=?, estimated_minutes=? WHERE id=?`,
+      [title, due_date, priority, tags, estimated_minutes, id]
+    );
+    res.json({ message: '할 일이 수정되었습니다.' });
+  } catch (error) {
+    res.status(500).json({ error: '할 일 수정 실패' });
+  }
+});
+
+// 4. 할 일 완료/되돌리기 API
+app.patch('/api/tasks/:id/status', async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body; // 'done' 또는 'todo'
+  try {
+    await pool.query(`UPDATE tasks SET status=? WHERE id=?`, [status, id]);
+    res.json({ message: `상태가 ${status}로 변경되었습니다.` });
+  } catch (error) {
+    res.status(500).json({ error: '상태 변경 실패' });
+  }
+});
+
+// 5. 할 일 삭제 API (소프트 삭제)
+app.delete('/api/tasks/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.query(`UPDATE tasks SET deleted_at = NOW() WHERE id=?`, [id]);
+    res.json({ message: '할 일이 삭제되었습니다.' });
+  } catch (error) {
+    res.status(500).json({ error: '할 일 삭제 실패' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
