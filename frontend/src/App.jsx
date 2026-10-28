@@ -7,16 +7,18 @@ function App() {
     <div style={{ padding: '20px', maxWidth: '900px', margin: '0 auto' }}>
       <div style={{ marginBottom: '20px', borderBottom: '2px solid #ccc', paddingBottom: '10px' }}>
         <button onClick={() => setActiveTab('card1')} style={{ marginRight: '10px', fontWeight: activeTab === 'card1' ? 'bold' : 'normal' }}>카드 1 (계획)</button>
-        <button onClick={() => setActiveTab('card2')} style={{ fontWeight: activeTab === 'card2' ? 'bold' : 'normal' }}>카드 2 (할 일)</button>
+        <button onClick={() => setActiveTab('card2')} style={{ marginRight: '10px', fontWeight: activeTab === 'card2' ? 'bold' : 'normal' }}>카드 2 (할 일)</button>
+        <button onClick={() => setActiveTab('card3')} style={{ fontWeight: activeTab === 'card3' ? 'bold' : 'normal' }}>카드 3 (실행 기록)</button>
       </div>
 
       {activeTab === 'card1' && <Card1 />}
       {activeTab === 'card2' && <Card2 />}
+      {activeTab === 'card3' && <Card3 />}
     </div>
   );
 }
 
-// ================= 카드 1 컴포넌트 =================
+// ================= 카드 1 컴포넌트 (계획) =================
 function Card1() {
   const [plans, setPlans] = useState([]);
   const [form, setForm] = useState({ title: '', period_start: '', period_end: '', priority: 'medium', success_criteria: '', estimated_minutes: 0 });
@@ -24,8 +26,7 @@ function Card1() {
 
   const fetchPlans = async () => {
     const res = await fetch('/api/plans');
-    const data = await res.json();
-    setPlans(data);
+    setPlans(await res.json());
   };
 
   useEffect(() => { fetchPlans(); }, []);
@@ -82,14 +83,13 @@ function Card1() {
   );
 }
 
-// ================= 카드 2 컴포넌트 =================
+// ================= 카드 2 컴포넌트 (할 일) =================
 function Card2() {
   const [tasks, setTasks] = useState([]);
   const [plans, setPlans] = useState([]);
   const [form, setForm] = useState({ plan_id: '', title: '', due_date: '', priority: 'medium', tags: '', estimated_minutes: 0 });
   const [editingId, setEditingId] = useState(null);
   
-  // 검색/필터/정렬 상태
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [sort, setSort] = useState('priority_desc');
@@ -100,24 +100,16 @@ function Card2() {
   };
 
   const fetchTasks = async () => {
-    // 검색, 필터, 정렬 쿼리 파라미터 조합
     const params = new URLSearchParams();
     if (search) params.append('search', search);
     if (statusFilter) params.append('status', statusFilter);
     if (sort) params.append('sort', sort);
-
     const res = await fetch(`/api/tasks?${params.toString()}`);
     setTasks(await res.json());
   };
 
-  useEffect(() => {
-    fetchPlans();
-  }, []);
-
-  // 검색, 필터, 정렬이 바뀔 때마다 목록 다시 불러오기
-  useEffect(() => {
-    fetchTasks();
-  }, [search, statusFilter, sort]);
+  useEffect(() => { fetchPlans(); }, []);
+  useEffect(() => { fetchTasks(); }, [search, statusFilter, sort]);
 
   const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
 
@@ -154,25 +146,19 @@ function Card2() {
   return (
     <div>
       <h2>카드 2: 할 일 다루기</h2>
-      
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '30px', padding: '20px', border: '1px solid #ccc' }}>
         <h3>{editingId ? '할 일 수정하기' : '새 할 일 만들기'}</h3>
-        
         <select name="plan_id" value={form.plan_id} onChange={handleChange} required>
           <option value="">계획을 선택하세요</option>
           {plans.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
         </select>
-
         <input name="title" placeholder="할 일 내용" value={form.title} onChange={handleChange} required />
         <input type="date" name="due_date" value={form.due_date} onChange={handleChange} />
-        
         <select name="priority" value={form.priority} onChange={handleChange}>
           <option value="high">높음</option><option value="medium">보통</option><option value="low">낮음</option>
         </select>
-
         <input name="tags" placeholder="태그 (쉼표로 구분)" value={form.tags} onChange={handleChange} />
         <input type="number" name="estimated_minutes" placeholder="예상 시간 (분)" value={form.estimated_minutes} onChange={handleChange} />
-        
         <button type="submit">{editingId ? '수정 완료' : '할 일 추가'}</button>
         {editingId && <button type="button" onClick={() => { setEditingId(null); setForm({ plan_id: '', title: '', due_date: '', priority: 'medium', tags: '', estimated_minutes: 0 }); }}>취소</button>}
       </form>
@@ -207,6 +193,105 @@ function Card2() {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+// ================= 카드 3 컴포넌트 (실행 기록) =================
+function Card3() {
+  const [tasks, setTasks] = useState([]);
+  const [selectedTaskId, setSelectedTaskId] = useState('');
+  const [executions, setExecutions] = useState([]);
+  const [form, setForm] = useState({ started_at: '', ended_at: '', blocked_reason: '' });
+  const [isLoading, setIsLoading] = useState(false);
+
+  const fetchTasks = async () => {
+    const res = await fetch('/api/tasks');
+    setTasks(await res.json());
+  };
+
+  const fetchExecutions = async (taskId) => {
+    if (!taskId) return;
+    const res = await fetch(`/api/executions/${taskId}`);
+    setExecutions(await res.json());
+  };
+
+  useEffect(() => { fetchTasks(); }, []);
+
+  const handleTaskChange = (e) => {
+    const taskId = e.target.value;
+    setSelectedTaskId(taskId);
+    fetchExecutions(taskId);
+  };
+
+  const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!selectedTaskId) return alert('할 일을 선택하세요.');
+    if (isLoading) return;
+    
+    setIsLoading(true);
+    try {
+      const res = await fetch('/api/executions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...form, task_id: selectedTaskId }),
+      });
+      const data = await res.json();
+
+      if (res.ok) {
+        alert('실행 기록이 저장되었습니다.');
+        fetchExecutions(selectedTaskId);
+      } else {
+        alert(data.error);
+      }
+    } finally {
+      setIsLoading(false); 
+    }
+  };
+
+  return (
+    <div>
+      <h2>카드 3: 실제로 한 일 적기 (실행 기록)</h2>
+      
+      <div style={{ marginBottom: '20px', padding: '20px', border: '1px solid #ccc' }}>
+        <h3>어떤 일을 기록할까요?</h3>
+        <select value={selectedTaskId} onChange={handleTaskChange} style={{ width: '100%', padding: '10px', marginBottom: '10px' }}>
+          <option value="">할 일을 선택하세요</option>
+          {tasks.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+        </select>
+      </div>
+
+      {selectedTaskId && (
+        <>
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '30px', padding: '20px', border: '1px solid #e0e0e0', backgroundColor: '#fafafa' }}>
+            <h3>실행 기록 추가</h3>
+            <label>시작 시각:</label>
+            <input type="datetime-local" name="started_at" value={form.started_at} onChange={handleChange} required />
+            <label>끝난 시각:</label>
+            <input type="datetime-local" name="ended_at" value={form.ended_at} onChange={handleChange} required />
+            <label>막혔던 이유 (선택):</label>
+            <input name="blocked_reason" placeholder="예: 개념 이해 부족" value={form.blocked_reason} onChange={handleChange} />
+            
+            <button type="submit" disabled={isLoading}>
+              {isLoading ? '저장 중...' : '실행 기록 저장'}
+            </button>
+          </form>
+
+          <h3>이 할 일의 실행 기록 목록</h3>
+          <ul style={{ listStyle: 'none', padding: 0 }}>
+            {executions.length === 0 && <p>기록이 없습니다.</p>}
+            {executions.map(ex => (
+              <li key={ex.id} style={{ border: '1px solid #ddd', padding: '15px', marginBottom: '10px' }}>
+                <p><strong>걸린 시간:</strong> {ex.duration_minutes}분</p>
+                <p><strong>시작:</strong> {ex.started_at} ~ <strong>종료:</strong> {ex.ended_at}</p>
+                <p><strong>막힌 이유:</strong> {ex.blocked_reason || '없음'}</p>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </div>
   );
 }
