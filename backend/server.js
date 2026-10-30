@@ -1,171 +1,195 @@
 const express = require('express');
 const cors = require('cors');
-const pool = require('./db');
+const session = require('express-session');
+const bcrypt = require('bcrypt');
+const { pool, sessionStore } = require('./db');
 require('dotenv').config();
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 
-// 헬스 체크
-app.get('/api/health', (req, res) => {
-  res.json({ ok: true, time: new Date().toISOString() });
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'pds-secret-key-2026',
+  store: sessionStore,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    maxAge: 1000 * 60 * 60 * 24, // 1일
+  }
+}));
+
+const requireAuth = (req, res, next) => {
+  if (!req.session.userId) return res.status(401).json({ error: '로그인이 필요합니다.' });
+  next();
+};
+
+// ==========================================
+// 🔐 인증 API
+// ==========================================
+app.post('/api/auth/signup', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: '이메일과 비밀번호를 입력하세요.' });
+  try {
+    const [existing] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
+    if (existing.length > 0) return res.status(409).json({ error: '이미 가입된 이메일입니다.' });
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const [result] = await pool.query('INSERT INTO users (email, password_hash) VALUES (?, ?)', [email, passwordHash]);
+
+    req.session.userId = result.insertId;
+    req.session.email = email;
+    res.status(201).json({ message: '가입 성공', userId: result.insertId });
+  } catch (error) { res.status(500).json({ error: '회원가입 실패' }); }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const [users] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
+    if (users.length === 0) return res.status(401).json({ error: '이메일 또는 비밀번호가 올바르지 않습니다.' });
+
+    const user = users[0];
+    const isValid = await bcrypt.compare(password, user.password_hash);
+    if (!isValid) return res.status(401).json({ error: '이메일 또는 비밀번호가 올바르지 않습니다.' });
+
+    req.session.userId = user.id;
+    req.session.email = user.email;
+    res.json({ message: '로그인 성공', userId: user.id });
+  } catch (error) { res.status(500).json({ error: '로그인 실패' }); }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  req.session.destroy((err) => {
+    if (err) return res.status(500).json({ error: '로그아웃 실패' });
+    res.clearCookie('connect.sid');
+    res.json({ message: '로그아웃 성공' });
+  });
+});
+
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  res.json({ userId: req.session.userId, email: req.session.email });
 });
 
 // ==========================================
-// [카드 1] 계획(Plans) 관련 API
+// 📝 카드 1~4 API (계획 삭제 포함)
 // ==========================================
-app.post('/api/plans', async (req, res) => {
+app.post('/api/plans', requireAuth, async (req, res) => {
   const { title, period_start, period_end, priority, success_criteria, estimated_minutes } = req.body;
   try {
     const [result] = await pool.query(
-      `INSERT INTO plans (title, period_start, period_end, priority, success_criteria, estimated_minutes) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [title, period_start, period_end, priority, success_criteria, estimated_minutes]
+      `INSERT INTO plans (user_id, title, period_start, period_end, priority, success_criteria, estimated_minutes) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [req.session.userId, title, period_start, period_end, priority, success_criteria, estimated_minutes]
     );
     res.status(201).json({ id: result.insertId, message: '계획이 생성되었습니다.' });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: '계획 생성 실패' });
-  }
+  } catch (error) { res.status(500).json({ error: '계획 생성 실패' }); }
 });
 
-app.get('/api/plans', async (req, res) => {
+app.get('/api/plans', requireAuth, async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM plans ORDER BY id DESC');
+    const [rows] = await pool.query('SELECT * FROM plans WHERE user_id = ? ORDER BY id DESC', [req.session.userId]);
     res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: '계획 조회 실패' });
-  }
+  } catch (error) { res.status(500).json({ error: '계획 조회 실패' }); }
 });
 
-app.put('/api/plans/:id', async (req, res) => {
+app.put('/api/plans/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
   const { title, period_start, period_end, priority, success_criteria, estimated_minutes } = req.body;
-  
   const connection = await pool.getConnection();
   try {
-    await connection.beginTransaction();
-    const [oldPlans] = await connection.query('SELECT * FROM plans WHERE id = ?', [id]);
-    if (oldPlans.length === 0) throw new Error('계획을 찾을 수 없습니다.');
+    const [oldPlans] = await connection.query('SELECT * FROM plans WHERE id = ? AND user_id = ?', [id, req.session.userId]);
+    if (oldPlans.length === 0) return res.status(404).json({ error: '계획을 찾을 수 없습니다.' });
     
+    await connection.beginTransaction();
+    await connection.query('INSERT INTO plan_history (plan_id, snapshot) VALUES (?, ?)', [id, JSON.stringify(oldPlans[0])]);
     await connection.query(
-      'INSERT INTO plan_history (plan_id, snapshot) VALUES (?, ?)',
-      [id, JSON.stringify(oldPlans[0])]
+      `UPDATE plans SET title=?, period_start=?, period_end=?, priority=?, success_criteria=?, estimated_minutes=? WHERE id=? AND user_id=?`,
+      [title, period_start, period_end, priority, success_criteria, estimated_minutes, id, req.session.userId]
     );
-
-    await connection.query(
-      `UPDATE plans SET title=?, period_start=?, period_end=?, priority=?, success_criteria=?, estimated_minutes=? WHERE id=?`,
-      [title, period_start, period_end, priority, success_criteria, estimated_minutes, id]
-    );
-
     await connection.commit();
-    res.json({ message: '계획이 수정되고 이력이 저장되었습니다.' });
+    res.json({ message: '계획이 수정되었습니다.' });
   } catch (error) {
     await connection.rollback();
-    console.error(error);
     res.status(500).json({ error: '계획 수정 실패' });
-  } finally {
-    connection.release();
-  }
+  } finally { connection.release(); }
 });
 
-// [카드 1] 계획 수정 이력 조회 API (신규 추가)
-app.get('/api/plans/:id/history', async (req, res) => {
+// 🚨 [추가된 계획 삭제 API]
+app.delete('/api/plans/:id', requireAuth, async (req, res) => {
+  const { id } = req.params;
   try {
-    const [rows] = await pool.query(
-      'SELECT * FROM plan_history WHERE plan_id = ? ORDER BY changed_at DESC', 
-      [req.params.id]
-    );
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: '이력 조회 실패' });
-  }
+    const [result] = await pool.query('DELETE FROM plans WHERE id = ? AND user_id = ?', [id, req.session.userId]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: '계획을 찾을 수 없거나 권한이 없습니다.' });
+    res.json({ message: '계획이 삭제되었습니다.' });
+  } catch (error) { res.status(500).json({ error: '계획 삭제 실패' }); }
 });
 
-// [카드 4] 다음 계획 고칠 점 저장 API
-app.patch('/api/plans/:id/improvement', async (req, res) => {
+app.get('/api/plans/:id/history', requireAuth, async (req, res) => {
+  const [plan] = await pool.query('SELECT id FROM plans WHERE id = ? AND user_id = ?', [req.params.id, req.session.userId]);
+  if (plan.length === 0) return res.status(404).json({ error: '계획 없음' });
+  const [rows] = await pool.query('SELECT * FROM plan_history WHERE plan_id = ? ORDER BY changed_at DESC', [req.params.id]);
+  res.json(rows);
+});
+
+app.patch('/api/plans/:id/improvement', requireAuth, async (req, res) => {
   const { id } = req.params;
   const { improvement } = req.body;
-  try {
-    await pool.query('UPDATE plans SET next_improvement = ? WHERE id = ?', [improvement, id]);
-    res.json({ message: '다음 계획 고칠 점이 저장되었습니다.' });
-  } catch (error) {
-    res.status(500).json({ error: '저장 실패' });
-  }
+  const [result] = await pool.query('UPDATE plans SET next_improvement = ? WHERE id = ? AND user_id = ?', [improvement, id, req.session.userId]);
+  if (result.affectedRows === 0) return res.status(404).json({ error: '계획 없음' });
+  res.json({ message: '저장 완료' });
 });
 
-// ==========================================
-// [카드 2] 할 일(Tasks) 관련 API
-// ==========================================
-app.post('/api/tasks', async (req, res) => {
+app.post('/api/tasks', requireAuth, async (req, res) => {
   const { plan_id, title, due_date, priority, tags, estimated_minutes } = req.body;
-  try {
-    const [result] = await pool.query(
-      `INSERT INTO tasks (plan_id, title, due_date, priority, tags, estimated_minutes) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [plan_id, title, due_date, priority, tags, estimated_minutes]
-    );
-    res.status(201).json({ id: result.insertId, message: '할 일이 생성되었습니다.' });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: '할 일 생성 실패' });
-  }
+  const [plan] = await pool.query('SELECT id FROM plans WHERE id = ? AND user_id = ?', [plan_id, req.session.userId]);
+  if (plan.length === 0) return res.status(403).json({ error: '권한 없음' });
+  
+  const [result] = await pool.query(
+    `INSERT INTO tasks (user_id, plan_id, title, due_date, priority, tags, estimated_minutes) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [req.session.userId, plan_id, title, due_date, priority, tags, estimated_minutes]
+  );
+  res.status(201).json({ id: result.insertId });
 });
 
-app.get('/api/tasks', async (req, res) => {
-  const { plan_id, status, search, sort } = req.query; 
-  let query = `SELECT * FROM tasks WHERE deleted_at IS NULL`;
-  const params = [];
-
-  if (plan_id) { query += ` AND plan_id = ?`; params.push(plan_id); }
-  if (status) { query += ` AND status = ?`; params.push(status); }
-  if (search) { query += ` AND (title LIKE ? OR tags LIKE ?)`; params.push(`%${search}%`, `%${search}%`); }
-
-  if (sort === 'due_date_asc') { query += ` ORDER BY due_date ASC, id ASC`; } 
-  else if (sort === 'due_date_desc') { query += ` ORDER BY due_date DESC, id ASC`; } 
-  else { query += ` ORDER BY FIELD(priority, 'high', 'medium', 'low'), due_date ASC, id ASC`; }
-
-  try {
-    const [rows] = await pool.query(query, params);
-    res.json(rows);
-  } catch (error) { res.status(500).json({ error: '할 일 조회 실패' }); }
+app.get('/api/tasks', requireAuth, async (req, res) => {
+  const [rows] = await pool.query('SELECT * FROM tasks WHERE user_id = ? AND deleted_at IS NULL ORDER BY id DESC', [req.session.userId]);
+  res.json(rows);
 });
 
-app.put('/api/tasks/:id', async (req, res) => {
+app.put('/api/tasks/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
   const { title, due_date, priority, tags, estimated_minutes } = req.body;
-  try {
-    await pool.query(
-      `UPDATE tasks SET title=?, due_date=?, priority=?, tags=?, estimated_minutes=? WHERE id=?`,
-      [title, due_date, priority, tags, estimated_minutes, id]
-    );
-    res.json({ message: '할 일이 수정되었습니다.' });
-  } catch (error) { res.status(500).json({ error: '할 일 수정 실패' }); }
+  const [result] = await pool.query(
+    `UPDATE tasks SET title=?, due_date=?, priority=?, tags=?, estimated_minutes=? WHERE id=? AND user_id=?`,
+    [title, due_date, priority, tags, estimated_minutes, id, req.session.userId]
+  );
+  if (result.affectedRows === 0) return res.status(404).json({ error: '할 일 없음' });
+  res.json({ message: '수정 완료' });
 });
 
-app.patch('/api/tasks/:id/status', async (req, res) => {
+app.patch('/api/tasks/:id/status', requireAuth, async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
-  try {
-    await pool.query(`UPDATE tasks SET status=? WHERE id=?`, [status, id]);
-    res.json({ message: `상태가 ${status}로 변경되었습니다.` });
-  } catch (error) { res.status(500).json({ error: '상태 변경 실패' }); }
+  const [result] = await pool.query(`UPDATE tasks SET status=? WHERE id=? AND user_id=?`, [status, id, req.session.userId]);
+  if (result.affectedRows === 0) return res.status(404).json({ error: '할 일 없음' });
+  res.json({ message: '상태 변경 완료' });
 });
 
-app.delete('/api/tasks/:id', async (req, res) => {
+app.delete('/api/tasks/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
-  try {
-    await pool.query(`UPDATE tasks SET deleted_at = NOW() WHERE id=?`, [id]);
-    res.json({ message: '할 일이 삭제되었습니다.' });
-  } catch (error) { res.status(500).json({ error: '할 일 삭제 실패' }); }
+  const [result] = await pool.query(`UPDATE tasks SET deleted_at = NOW() WHERE id=? AND user_id=?`, [id, req.session.userId]);
+  if (result.affectedRows === 0) return res.status(404).json({ error: '할 일 없음' });
+  res.json({ message: '삭제 완료' });
 });
 
-// ==========================================
-// [카드 3] 실행 기록(Executions) 관련 API
-// ==========================================
-app.post('/api/executions', async (req, res) => {
+app.post('/api/executions', requireAuth, async (req, res) => {
   const { task_id, started_at, ended_at, blocked_reason } = req.body;
+  const [task] = await pool.query('SELECT id FROM tasks WHERE id = ? AND user_id = ?', [task_id, req.session.userId]);
+  if (task.length === 0) return res.status(403).json({ error: '권한 없음' });
+
   const start = new Date(started_at);
   const end = new Date(ended_at);
   const duration_minutes = Math.floor((end - start) / 1000 / 60);
@@ -173,95 +197,72 @@ app.post('/api/executions', async (req, res) => {
 
   try {
     const [result] = await pool.query(
-      `INSERT INTO executions (task_id, started_at, ended_at, duration_minutes, blocked_reason, idempotency_key) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [task_id, started_at, ended_at, duration_minutes, blocked_reason || null, idempotency_key]
+      `INSERT INTO executions (user_id, task_id, started_at, ended_at, duration_minutes, blocked_reason, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [req.session.userId, task_id, started_at, ended_at, duration_minutes, blocked_reason || null, idempotency_key]
     );
-    res.status(201).json({ id: result.insertId, message: '실행 기록이 저장되었습니다.' });
+    res.status(201).json({ id: result.insertId });
   } catch (error) {
-    if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ error: '이미 저장된 실행 기록입니다. (중복 방지됨)' });
-    }
-    console.error(error);
-    res.status(500).json({ error: '실행 기록 저장 실패' });
+    if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: '이미 저장된 기록입니다.' });
+    res.status(500).json({ error: '저장 실패' });
   }
 });
 
-app.get('/api/executions/:task_id', async (req, res) => {
-  try {
-    const [rows] = await pool.query(
-      'SELECT * FROM executions WHERE task_id = ? ORDER BY created_at DESC', 
-      [req.params.task_id]
-    );
-    res.json(rows);
-  } catch (error) { res.status(500).json({ error: '실행 기록 조회 실패' }); }
+app.get('/api/executions/:task_id', requireAuth, async (req, res) => {
+  const [task] = await pool.query('SELECT id FROM tasks WHERE id = ? AND user_id = ?', [req.params.task_id, req.session.userId]);
+  if (task.length === 0) return res.status(403).json({ error: '권한 없음' });
+  const [rows] = await pool.query('SELECT * FROM executions WHERE task_id = ? AND user_id = ? ORDER BY created_at DESC', [req.params.task_id, req.session.userId]);
+  res.json(rows);
 });
 
-// ==========================================
-// [카드 4] 돌아보기(Review) 집계 API
-// ==========================================
-app.get('/api/review/:plan_id', async (req, res) => {
+app.get('/api/review/:plan_id', requireAuth, async (req, res) => {
   const { plan_id } = req.params;
-  try {
-    const [[{ total_tasks }]] = await pool.query(`SELECT COUNT(*) as total_tasks FROM tasks WHERE plan_id = ? AND deleted_at IS NULL`, [plan_id]);
-    const [[{ done_tasks }]] = await pool.query(`SELECT COUNT(*) as done_tasks FROM tasks WHERE plan_id = ? AND deleted_at IS NULL AND status = 'done'`, [plan_id]);
-    const [[{ delayed_tasks }]] = await pool.query(
-      `SELECT COUNT(*) as delayed_tasks FROM tasks WHERE plan_id = ? AND deleted_at IS NULL AND status != 'done' AND DATE(due_date) < DATE(CONVERT_TZ(NOW(), '+00:00', '+09:00'))`, [plan_id]
-    );
-    const [[{ blocked_tasks }]] = await pool.query(
-      `SELECT COUNT(DISTINCT t.id) as blocked_tasks FROM tasks t JOIN executions e ON t.id = e.task_id WHERE t.plan_id = ? AND t.deleted_at IS NULL AND e.blocked_reason IS NOT NULL AND e.blocked_reason != ''`, [plan_id]
-    );
-    const [[{ total_estimated }]] = await pool.query(`SELECT COALESCE(SUM(estimated_minutes), 0) as total_estimated FROM tasks WHERE plan_id = ? AND deleted_at IS NULL`, [plan_id]);
-    const [[{ total_actual }]] = await pool.query(
-      `SELECT COALESCE(SUM(e.duration_minutes), 0) as total_actual FROM executions e JOIN tasks t ON e.task_id = t.id WHERE t.plan_id = ? AND t.deleted_at IS NULL`, [plan_id]
-    );
+  const [plan] = await pool.query('SELECT id FROM plans WHERE id = ? AND user_id = ?', [plan_id, req.session.userId]);
+  if (plan.length === 0) return res.status(404).json({ error: '계획 없음' });
 
-    res.json({ total_tasks, done_tasks, delayed_tasks, blocked_tasks, total_estimated, total_actual, difference: total_actual - total_estimated });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: '집계 실패' });
-  }
+  const uid = req.session.userId;
+  const [[{ total_tasks }]] = await pool.query(`SELECT COUNT(*) as total_tasks FROM tasks WHERE plan_id = ? AND user_id = ? AND deleted_at IS NULL`, [plan_id, uid]);
+  const [[{ done_tasks }]] = await pool.query(`SELECT COUNT(*) as done_tasks FROM tasks WHERE plan_id = ? AND user_id = ? AND deleted_at IS NULL AND status = 'done'`, [plan_id, uid]);
+  const [[{ delayed_tasks }]] = await pool.query(`SELECT COUNT(*) as delayed_tasks FROM tasks WHERE plan_id = ? AND user_id = ? AND deleted_at IS NULL AND status != 'done' AND DATE(due_date) < DATE(CONVERT_TZ(NOW(), '+00:00', '+09:00'))`, [plan_id, uid]);
+  const [[{ blocked_tasks }]] = await pool.query(`SELECT COUNT(DISTINCT t.id) as blocked_tasks FROM tasks t JOIN executions e ON t.id = e.task_id WHERE t.plan_id = ? AND t.user_id = ? AND t.deleted_at IS NULL AND e.blocked_reason IS NOT NULL AND e.blocked_reason != ''`, [plan_id, uid]);
+  const [[{ total_estimated }]] = await pool.query(`SELECT COALESCE(SUM(estimated_minutes), 0) as total_estimated FROM tasks WHERE plan_id = ? AND user_id = ? AND deleted_at IS NULL`, [plan_id, uid]);
+  const [[{ total_actual }]] = await pool.query(`SELECT COALESCE(SUM(e.duration_minutes), 0) as total_actual FROM executions e JOIN tasks t ON e.task_id = t.id WHERE t.plan_id = ? AND t.user_id = ? AND t.deleted_at IS NULL`, [plan_id, uid]);
+
+  res.json({ total_tasks, done_tasks, delayed_tasks, blocked_tasks, total_estimated, total_actual, difference: total_actual - total_estimated });
 });
 
-// [카드 4] 드릴다운 API (모든 집계 항목 지원하도록 확장)
-app.get('/api/review/:plan_id/drilldown', async (req, res) => {
+app.get('/api/review/:plan_id/drilldown', requireAuth, async (req, res) => {
   const { plan_id } = req.params;
   const { type } = req.query;
-  
-  let query = `SELECT t.* FROM tasks t WHERE t.plan_id = ? AND t.deleted_at IS NULL`;
-  const params = [plan_id];
+  const uid = req.session.userId;
+  let query = `SELECT t.* FROM tasks t WHERE t.plan_id = ? AND t.user_id = ? AND t.deleted_at IS NULL`;
+  const params = [plan_id, uid];
 
-  if (type === 'total') {
-    // 전체 할 일 (조건 없음)
-  } else if (type === 'done') {
-    query += ` AND t.status = 'done'`;
-  } else if (type === 'delayed') {
-    query += ` AND t.status != 'done' AND DATE(t.due_date) < DATE(CONVERT_TZ(NOW(), '+00:00', '+09:00'))`;
-  } else if (type === 'blocked') {
-    query = `SELECT DISTINCT t.* FROM tasks t JOIN executions e ON t.id = e.task_id WHERE t.plan_id = ? AND t.deleted_at IS NULL AND e.blocked_reason IS NOT NULL AND e.blocked_reason != ''`;
-  } else if (type === 'estimated' || type === 'actual') {
-    query += ` ORDER BY t.id ASC`;
+  if (type === 'done') query += ` AND t.status = 'done'`;
+  else if (type === 'delayed') query += ` AND t.status != 'done' AND DATE(t.due_date) < DATE(CONVERT_TZ(NOW(), '+00:00', '+09:00'))`;
+  else if (type === 'blocked') {
+    query = `SELECT DISTINCT t.* FROM tasks t JOIN executions e ON t.id = e.task_id WHERE t.plan_id = ? AND t.user_id = ? AND t.deleted_at IS NULL AND e.blocked_reason IS NOT NULL AND e.blocked_reason != ''`;
   }
-
-  try {
-    const [rows] = await pool.query(query, params);
-    res.json(rows);
-  } catch (error) { res.status(500).json({ error: '드릴다운 조회 실패' }); }
+  const [rows] = await pool.query(query, params);
+  res.json(rows);
 });
 
-// ==========================================
-// [카드 5] 데이터 내보내기 API
-// ==========================================
-app.get('/api/export', async (req, res) => {
-  try {
-    const [plans] = await pool.query('SELECT * FROM plans');
-    const [tasks] = await pool.query('SELECT * FROM tasks');
-    const [executions] = await pool.query('SELECT * FROM executions');
-    res.json({ plans, tasks, executions, exported_at: new Date().toISOString() });
-  } catch (error) { res.status(500).json({ error: '내보내기 실패' }); }
+app.get('/api/export', requireAuth, async (req, res) => {
+  const uid = req.session.userId;
+  const [plans] = await pool.query('SELECT * FROM plans WHERE user_id = ?', [uid]);
+  const [tasks] = await pool.query('SELECT * FROM tasks WHERE user_id = ?', [uid]);
+  const [executions] = await pool.query('SELECT * FROM executions WHERE user_id = ?', [uid]);
+  res.json({ plans, tasks, executions, exported_at: new Date().toISOString() });
+});
+
+app.delete('/api/auth/account', requireAuth, (req, res) => {
+  const uid = req.session.userId;
+  pool.query('DELETE FROM users WHERE id = ?', [uid], (err) => {
+    if (err) return res.status(500).json({ error: '계정 삭제 실패' });
+    req.session.destroy();
+    res.clearCookie('connect.sid');
+    res.json({ message: '계정과 모든 자료가 삭제되었습니다.' });
+  });
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+app.listen(PORT, () => { console.log(`Server running on http://localhost:${PORT}`); });

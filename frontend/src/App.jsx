@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import './index.css';
 
-// 🔄 서버 절전 모드 대응: 실패 시 재시도하는 fetch 함수
+const API_URL = import.meta.env.VITE_API_URL || '';
+
 const fetchWithRetry = async (url, options = {}, retries = 3, delay = 3000) => {
   for (let i = 0; i < retries; i++) {
     try {
-      const res = await fetch(url, options);
-      if (res.ok || res.status === 409 || res.status === 404) return res;
+      const res = await fetch(url, { ...options, credentials: 'include' }); // 쿠키 포함 필수!
+      if (res.ok || res.status === 409 || res.status === 401 || res.status === 404) return res;
     } catch (err) {
       if (i === retries - 1) throw err;
     }
@@ -15,42 +16,111 @@ const fetchWithRetry = async (url, options = {}, retries = 3, delay = 3000) => {
   throw new Error('서버 응답 지연');
 };
 
-// 🔗 API 주소 설정 (배포 시 VITE_API_URL 사용, 로컬은 빈 문자열)
-const API_URL = import.meta.env.VITE_API_URL || '';
-
 function App() {
+  const [user, setUser] = useState(null);
+  const [isChecking, setIsChecking] = useState(true);
+  const [isLoginView, setIsLoginView] = useState(true); // true: 로그인, false: 가입
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('card1');
   const [isServerReady, setIsServerReady] = useState(false);
-  const [serverError, setServerError] = useState(false);
 
-  // 🌐 서버가 켜져 있는지(절전 모드인지) 확인
+  // 서버 및 세션 확인
   useEffect(() => {
-    const checkServer = async () => {
+    const checkAuth = async () => {
       try {
-        const res = await fetchWithRetry(`${API_URL}/api/health`);
-        if (res.ok) setIsServerReady(true);
+        const res = await fetchWithRetry(`${API_URL}/api/auth/me`);
+        if (res.ok) {
+          setUser(await res.json());
+        }
       } catch (err) {
-        setServerError(true);
+        console.log('로그인 안 됨');
+      } finally {
+        setIsChecking(false);
+        setIsServerReady(true);
       }
     };
-    checkServer();
+    checkAuth();
   }, []);
+
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setError('');
+    const endpoint = isLoginView ? '/api/auth/login' : '/api/auth/signup';
+    try {
+      const res = await fetchWithRetry(`${API_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setUser({ userId: data.userId, email });
+      } else {
+        setError(data.error || '인증에 실패했습니다.');
+      }
+    } catch (err) {
+      setError('서버 오류가 발생했습니다.');
+    }
+  };
+
+  const handleLogout = async () => {
+    await fetchWithRetry(`${API_URL}/api/auth/logout`, { method: 'POST' });
+    setUser(null);
+    setEmail('');
+    setPassword('');
+    setActiveTab('card1');
+  };
+
+  if (isChecking) {
+    return <div style={{ textAlign: 'center', marginTop: '100px' }}><h2>🌿 서버 연결 중...</h2></div>;
+  }
 
   if (!isServerReady) {
     return (
       <div className="app-container" style={{ textAlign: 'center', marginTop: '100px' }}>
         <h2>🌿 서버를 깨우는 중입니다...</h2>
         <p style={{ color: 'var(--muted)' }}>무료 서버 특성상 첫 연결은 최대 1분 정도 걸릴 수 있어요. 잠시만 기다려 주세요.</p>
-        {serverError && <p style={{ color: '#B85C5C', marginTop: '20px' }}>서버에 연결할 수 없습니다. 새로고침을 눌러주세요.</p>}
-        {serverError && <button className="btn-primary" onClick={() => window.location.reload()} style={{ marginTop: '10px' }}>다시 시도</button>}
       </div>
     );
   }
 
+  // 로그인/회원가입 화면 (T07-C03, C94~C97)
+  if (!user) {
+    return (
+      <div className="app-container" style={{ maxWidth: '400px', marginTop: '80px' }}>
+        <h1 style={{ textAlign: 'center', color: 'var(--accent)', marginBottom: '30px' }}>플랜두씨 다이어리</h1>
+        <div className="form-card">
+          <h3 style={{ marginTop: 0, textAlign: 'center' }}>{isLoginView ? '로그인' : '회원가입'}</h3>
+          {error && <p style={{ color: '#d32f2f', fontSize: '14px', textAlign: 'center' }}>{error}</p>}
+          <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div className="form-group">
+              <label htmlFor="email">이메일</label>
+              <input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            </div>
+            <div className="form-group">
+              <label htmlFor="password">비밀번호</label>
+              <input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+            </div>
+            <button type="submit" className="btn-primary" style={{ marginTop: '10px' }}>{isLoginView ? '로그인' : '가입하기'}</button>
+          </form>
+          <div style={{ marginTop: '20px', textAlign: 'center', fontSize: '14px' }}>
+            <span style={{ color: 'var(--muted)' }}>{isLoginView ? '계정이 없으신가요?' : '이미 계정이 있으신가요?'} </span>
+            <button onClick={() => { setIsLoginView(!isLoginView); setError(''); }} style={{ background: 'none', border: 'none', color: 'var(--accent)', fontWeight: 'bold', cursor: 'pointer', textDecoration: 'underline' }}>
+              {isLoginView ? '회원가입' : '로그인'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 로그인 후 메인 화면
   return (
     <div className="app-container">
       <div className="notice-banner">
-        <strong>⚠️ 안내:</strong> 지금은 로그인이 없어 링크를 아는 사람은 누구나 볼 수 있습니다. 남이 봐도 괜찮은 내용만 넣으세요.
+        <strong>⚠️ 안내:</strong> 로그인한 사용자만 데이터를 볼 수 있습니다. 링크를 아는 사람도 로그인 화면까지만 볼 수 있습니다.
       </div>
 
       <div className="nav-bar">
@@ -62,19 +132,10 @@ function App() {
             <button onClick={() => setActiveTab('card4')} className={`tab-btn ${activeTab === 'card4' ? 'active' : ''}`}>돌아보기</button>
           </div>
         </div>
-        <button className="btn-export" onClick={async () => {
-          const res = await fetchWithRetry(`${API_URL}/api/export`);
-          const data = await res.json();
-          const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = 'pds-planner-backup.json';
-          a.click();
-          URL.revokeObjectURL(url);
-        }}>
-          📥 내 데이터 내보내기
-        </button>
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <span style={{ fontSize: '14px', color: 'var(--muted)' }}>{user.email}</span>
+          <button className="btn-export" onClick={handleLogout}>로그아웃</button>
+        </div>
       </div>
 
       {activeTab === 'card1' && <Card1 />}
@@ -85,7 +146,7 @@ function App() {
   );
 }
 
-// ================= 카드 1 컴포넌트 (계획) =================
+// ================= 카드 1 (계획 - 삭제 버튼 추가) =================
 function Card1() {
   const [plans, setPlans] = useState([]);
   const [form, setForm] = useState({ title: '', period_start: '', period_end: '', priority: 'medium', success_criteria: '', estimated_minutes: 0 });
@@ -94,7 +155,7 @@ function Card1() {
 
   const fetchPlans = async () => {
     const res = await fetchWithRetry(`${API_URL}/api/plans`);
-    setPlans(await res.json());
+    if (res.ok) setPlans(await res.json());
   };
 
   useEffect(() => { fetchPlans(); }, []);
@@ -107,7 +168,7 @@ function Card1() {
     const url = editingId ? `${API_URL}/api/plans/${editingId}` : `${API_URL}/api/plans`;
     const res = await fetchWithRetry(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
     if (res.ok) {
-      alert(editingId ? '수정되었습니다. (이력이 저장됨)' : '생성되었습니다.');
+      alert(editingId ? '수정되었습니다.' : '생성되었습니다.');
       setForm({ title: '', period_start: '', period_end: '', priority: 'medium', success_criteria: '', estimated_minutes: 0 });
       setEditingId(null);
       fetchPlans();
@@ -122,6 +183,17 @@ function Card1() {
   const handleShowHistory = async (id) => {
     const res = await fetchWithRetry(`${API_URL}/api/plans/${id}/history`);
     setHistoryData(await res.json());
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('정말 이 계획을 삭제하시겠습니까? 관련된 할 일과 기록도 모두 삭제됩니다.')) return;
+    const res = await fetchWithRetry(`${API_URL}/api/plans/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      alert('계획이 삭제되었습니다.');
+      fetchPlans();
+    } else {
+      alert('삭제에 실패했습니다.');
+    }
   };
 
   return (
@@ -170,12 +242,11 @@ function Card1() {
             <h4>{plan.title} <span className={`badge ${plan.priority === 'high' ? 'text-high' : plan.priority === 'low' ? 'text-low' : ''}`} style={{ backgroundColor: plan.priority === 'high' ? '#ffcdd2' : plan.priority === 'low' ? '#c8e6c9' : '#ffe0b2', color: 'inherit' }}>{plan.priority}</span></h4>
             <p>기간: {plan.period_start.split('T')[0]} ~ {plan.period_end.split('T')[0]} | 예상: {plan.estimated_minutes}분</p>
             <p>성공 기준: {plan.success_criteria}</p>
-            {plan.next_improvement && (
-              <p style={{ color: '#d32f2f', fontWeight: 'bold' }}>🎯 다음 계획을 위한 고칠 점: {plan.next_improvement}</p>
-            )}
+            {plan.next_improvement && <p style={{ color: '#d32f2f', fontWeight: 'bold' }}>🎯 고칠 점: {plan.next_improvement}</p>}
             <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
               <button className="btn-secondary" onClick={() => handleEdit(plan)}>수정하기</button>
               <button className="btn-secondary" onClick={() => handleShowHistory(plan.id)}>이력 보기</button>
+              <button className="btn-secondary" style={{ color: '#d32f2f' }} onClick={() => handleDelete(plan.id)}>삭제</button>
             </div>
           </li>
         ))}
@@ -208,20 +279,19 @@ function Card1() {
   );
 }
 
-// ================= 카드 2 컴포넌트 (할 일) =================
+// ================= 카드 2, 3, 4 (기존과 동일하되 fetchWithRetry와 API_URL 적용) =================
 function Card2() {
   const [tasks, setTasks] = useState([]);
   const [plans, setPlans] = useState([]);
   const [form, setForm] = useState({ plan_id: '', title: '', due_date: '', priority: 'medium', tags: '', estimated_minutes: 0 });
   const [editingId, setEditingId] = useState(null);
-  
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [sort, setSort] = useState('priority_desc');
 
   const fetchPlans = async () => {
     const res = await fetchWithRetry(`${API_URL}/api/plans`);
-    setPlans(await res.json());
+    if (res.ok) setPlans(await res.json());
   };
 
   const fetchTasks = async () => {
@@ -230,7 +300,7 @@ function Card2() {
     if (statusFilter) params.append('status', statusFilter);
     if (sort) params.append('sort', sort);
     const res = await fetchWithRetry(`${API_URL}/api/tasks?${params.toString()}`);
-    setTasks(await res.json());
+    if (res.ok) setTasks(await res.json());
   };
 
   useEffect(() => { fetchPlans(); }, []);
@@ -350,7 +420,6 @@ function Card2() {
   );
 }
 
-// ================= 카드 3 컴포넌트 (실행 기록) =================
 function Card3() {
   const [tasks, setTasks] = useState([]);
   const [selectedTaskId, setSelectedTaskId] = useState('');
@@ -360,13 +429,13 @@ function Card3() {
 
   const fetchTasks = async () => {
     const res = await fetchWithRetry(`${API_URL}/api/tasks`);
-    setTasks(await res.json());
+    if (res.ok) setTasks(await res.json());
   };
 
   const fetchExecutions = async (taskId) => {
     if (!taskId) return;
     const res = await fetchWithRetry(`${API_URL}/api/executions/${taskId}`);
-    setExecutions(await res.json());
+    if (res.ok) setExecutions(await res.json());
   };
 
   useEffect(() => { fetchTasks(); }, []);
@@ -383,7 +452,6 @@ function Card3() {
     e.preventDefault();
     if (!selectedTaskId) return alert('할 일을 선택하세요.');
     if (isLoading) return;
-    
     setIsLoading(true);
     try {
       const res = await fetchWithRetry(`${API_URL}/api/executions`, {
@@ -392,7 +460,6 @@ function Card3() {
         body: JSON.stringify({ ...form, task_id: selectedTaskId }),
       });
       const data = await res.json();
-
       if (res.ok) {
         alert('실행 기록이 저장되었습니다.');
         fetchExecutions(selectedTaskId);
@@ -400,15 +467,12 @@ function Card3() {
       } else {
         alert(data.error);
       }
-    } finally {
-      setIsLoading(false); 
-    }
+    } finally { setIsLoading(false); }
   };
 
   return (
     <div>
       <h2>실제로 한 일 적기</h2>
-      
       <div className="form-card" style={{ marginBottom: '20px' }}>
         <div className="form-group">
           <label htmlFor="exec-task">어떤 일을 기록할까요?</label>
@@ -436,7 +500,6 @@ function Card3() {
                 <label htmlFor="exec-blocked">막혔던 이유 (선택)</label>
                 <input id="exec-blocked" name="blocked_reason" placeholder="예: 개념 이해 부족" value={form.blocked_reason} onChange={handleChange} />
               </div>
-              
               <button type="submit" className="btn-primary" disabled={isLoading} style={{ marginTop: '8px' }}>
                 {isLoading ? '저장 중...' : '실행 기록 저장'}
               </button>
@@ -460,7 +523,6 @@ function Card3() {
   );
 }
 
-// ================= 카드 4 컴포넌트 (돌아보기) =================
 function Card4() {
   const [plans, setPlans] = useState([]);
   const [selectedPlanId, setSelectedPlanId] = useState('');
@@ -471,14 +533,16 @@ function Card4() {
 
   const fetchPlans = async () => {
     const res = await fetchWithRetry(`${API_URL}/api/plans`);
-    setPlans(await res.json());
+    if (res.ok) setPlans(await res.json());
   };
 
   const fetchReview = async (planId) => {
     if (!planId) return;
     const res = await fetchWithRetry(`${API_URL}/api/review/${planId}`);
-    setReview(await res.json());
-    setDrilldownData(null);
+    if (res.ok) {
+      setReview(await res.json());
+      setDrilldownData(null);
+    }
   };
 
   useEffect(() => { fetchPlans(); }, []);
@@ -504,7 +568,6 @@ function Card4() {
   return (
     <div>
       <h2>돌아보기</h2>
-      
       <div className="form-card" style={{ marginBottom: '24px' }}>
         <div className="form-group">
           <label htmlFor="review-plan">어떤 계획을 돌아볼까요?</label>
