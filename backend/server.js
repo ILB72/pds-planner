@@ -6,10 +6,16 @@ const { pool, sessionStore } = require('./db');
 require('dotenv').config();
 
 const app = express();
+
+// 🚨 Render 프록시 환경에서 HTTPS 인식 및 쿠키 전송을 위한 설정
+app.set('trust proxy', 1); 
+
+// 🚨 Vercel 프론트엔드 주소 명시 및 쿠키(credentials) 허용
 app.use(cors({
-  origin: 'https://pds-planner-frontend.vercel.app', // Vercel 프론트엔드 주소 명시
-  credentials: true, // 쿠키(세션) 허용
+  origin: 'https://pds-planner-frontend.vercel.app',
+  credentials: true,
 }));
+
 app.use(express.json());
 
 app.use(session({
@@ -19,7 +25,7 @@ app.use(session({
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.NODE_ENV === 'production', // 배포 환경(HTTPS)에서만 secure 쿠키 사용
     sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     maxAge: 1000 * 60 * 60 * 24, // 1일
   }
@@ -46,7 +52,10 @@ app.post('/api/auth/signup', async (req, res) => {
     req.session.userId = result.insertId;
     req.session.email = email;
     res.status(201).json({ message: '가입 성공', userId: result.insertId });
-  } catch (error) { res.status(500).json({ error: '회원가입 실패' }); }
+  } catch (error) { 
+    console.error(error);
+    res.status(500).json({ error: '회원가입 실패' }); 
+  }
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -62,7 +71,10 @@ app.post('/api/auth/login', async (req, res) => {
     req.session.userId = user.id;
     req.session.email = user.email;
     res.json({ message: '로그인 성공', userId: user.id });
-  } catch (error) { res.status(500).json({ error: '로그인 실패' }); }
+  } catch (error) { 
+    console.error(error);
+    res.status(500).json({ error: '로그인 실패' }); 
+  }
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -88,7 +100,10 @@ app.post('/api/plans', requireAuth, async (req, res) => {
       [req.session.userId, title, period_start, period_end, priority, success_criteria, estimated_minutes]
     );
     res.status(201).json({ id: result.insertId, message: '계획이 생성되었습니다.' });
-  } catch (error) { res.status(500).json({ error: '계획 생성 실패' }); }
+  } catch (error) { 
+    console.error(error);
+    res.status(500).json({ error: '계획 생성 실패' }); 
+  }
 });
 
 app.get('/api/plans', requireAuth, async (req, res) => {
@@ -120,7 +135,6 @@ app.put('/api/plans/:id', requireAuth, async (req, res) => {
   } finally { connection.release(); }
 });
 
-// 🚨 [추가된 계획 삭제 API]
 app.delete('/api/plans/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
   try {
