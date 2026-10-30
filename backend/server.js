@@ -6,7 +6,10 @@ const { pool, sessionStore } = require('./db');
 require('dotenv').config();
 
 const app = express();
-app.use(cors({ origin: true, credentials: true }));
+app.use(cors({
+  origin: 'https://pds-planner-frontend.vercel.app', // Vercel 프론트엔드 주소 명시
+  credentials: true, // 쿠키(세션) 허용
+}));
 app.use(express.json());
 
 app.use(session({
